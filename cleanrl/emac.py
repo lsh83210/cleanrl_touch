@@ -131,6 +131,8 @@ class MemBuffer:
         self.max_size = capacity
         self.ptr = 0
         self.size = 0
+
+        self.size = 0
         self.k = k
 
         self.sa_cuda = t.zeros(capacity, mem_dim, dtype=MEM_DTYPE).to(device)
