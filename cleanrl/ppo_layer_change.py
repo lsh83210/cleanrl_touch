@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import tyro
+import torch.nn.functional as F
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 
@@ -32,13 +33,14 @@ class Args:
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
+    number_c:   int = 200
 
     # Algorithm specific arguments
     env_id: str = "CartPole-v1"
     """the id of the environment"""
-    total_timesteps: int = 100000
+    total_timesteps: int = 500000
     """total timesteps of the experiments"""
-    learning_rate: float = 1e-4
+    learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
     num_envs: int = 4
     """the number of parallel game environments"""
@@ -100,15 +102,20 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
+        self.fixed_weights1 = nn.Parameter(torch.randn(args.number_c,np.array(envs.single_observation_space.shape).prod(), 64), requires_grad=False)
+        self.scale1 = nn.Parameter(torch.ones(args.number_c), requires_grad=True)
+        self.fixed_weights2 = nn.Parameter(torch.randn(args.number_c,np.array(envs.single_observation_space.shape).prod(), 64), requires_grad=False)
+        self.scale2 = nn.Parameter(torch.ones(args.number_c), requires_grad=True)
+        
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            # layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 1), std=1.0),
         )
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            # layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
@@ -116,9 +123,11 @@ class Agent(nn.Module):
         )
 
     def get_value(self, x):
+        x = F.linear(x, (self.fixed_weights1 * self.scale1.unsqueeze(-1).unsqueeze(-1)).sum(dim=0).T)
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None):
+        x = F.linear(x, (self.fixed_weights2 * self.scale2.unsqueeze(-1).unsqueeze(-1)).sum(dim=0).T)
         logits = self.actor(x)
         probs = Categorical(logits=logits)
         if action is None:

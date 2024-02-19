@@ -55,6 +55,7 @@ class Args:
     buffer_size: int = 10000
     """the replay memory buffer size"""
     svd_buffer_size: int = 1000000
+
     gamma: float = 0.99
     """the discount factor gamma"""
     tau: float = 1.0
@@ -92,8 +93,11 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
 # ALGO LOGIC: initialize agent here:
 class QNetwork(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env,v):
         super().__init__()
+        v_tensor = torch.tensor(v, dtype=torch.float32, requires_grad=False)
+        self.custom_layer = nn.Linear(np.array(env.single_observation_space.shape).prod(), np.array(env.single_observation_space.shape).prod())
+        self.custom_layer.weight = nn.Parameter(v_tensor, requires_grad=False)
         self.network = nn.Sequential(
             nn.Linear(np.array(env.single_observation_space.shape).prod(), 120),
             nn.ReLU(),
@@ -103,6 +107,7 @@ class QNetwork(nn.Module):
         )
 
     def forward(self, x):
+        x=self.custom_layer(x)
         return self.network(x)
 
 
@@ -156,20 +161,16 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    q_network = QNetwork(envs).to(device)
-    optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
-    target_network = QNetwork(envs).to(device)
-    target_network.load_state_dict(q_network.state_dict())
 
-    rb = ReplayBuffer(
-        args.buffer_size,
+    re = ReplayBuffer_get(
+        args.svd_buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
         device,
         handle_timeout_termination=False,
     )
-    re = ReplayBuffer_get(
-        args.svd_buffer_size,
+    rb = ReplayBuffer(
+        args.buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
         device,
@@ -182,8 +183,20 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     for global_step in range(args.total_timesteps):
         # ALGO LOGIC: put action logic here
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step)
-        if random.random() < epsilon:
+        if global_step==args.learning_starts:
+            states=re.get()
+            _,sigma,v_trans=np.linalg.svd(states, full_matrices=True)
+            squared_sigma = np.square(sigma)
+            total_variance = np.sum(squared_sigma)
+            variance_ratios = squared_sigma / total_variance
+            v_trans=v_trans*(1.0/np.sqrt(variance_ratios))
+            q_network = QNetwork(envs,v_trans.T).to(device)
+            optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
+            target_network = QNetwork(envs,v_trans.T).to(device)
+            target_network.load_state_dict(q_network.state_dict())
+        elif random.random() < epsilon or global_step<args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+        
         else:
             q_values = q_network(torch.Tensor(obs).to(device))
             actions = torch.argmax(q_values, dim=1).cpu().numpy()
@@ -265,20 +278,19 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             push_to_hub(args, episodic_returns, repo_id, "DQN", f"runs/{run_name}", f"videos/{run_name}-eval")
     tsne = TSNE(n_components=2, random_state=0)
     X=re.get()
-    front_part = X[:10000,:]
-    back_part = X[-10000:,:]
-    breakpoint()
-    X = np.concatenate([front_part, back_part])
-    X_2d = tsne.fit_transform(X)
-    num_points = X.shape[0]  # 데이터 포인트의 총 수
-    colors = np.linspace(0, 1, 2)  # 각 10,000개마다 고유한 색상 값 할당
-    labels = np.repeat(colors, 10000)
-    plt.figure(figsize=(12, 8))
-    scatter = plt.scatter(X_2d[:, 0], X_2d[:, 1], c=labels, cmap='viridis', marker='.',s=0.1)
-    plt.colorbar(scatter)
-    plt.title('t-SNE visualization of state vectors')
-    plt.xlabel('t-SNE feature 1')
-    plt.ylabel('t-SNE feature 2')
-    plt.savefig(f'tsne_dqn{args.seed}.png')
+    Y=re.get_Action()
+    np.save(f'dqn_svd_scailing_state{args.seed}.npy', X)
+    np.save(f'dqn_svd_cartpole_action{args.seed}.npy', Y)
+    # X_2d = tsne.fit_transform(X)
+    # num_points = X.shape[0]  # 데이터 포인트의 총 수
+    # colors = np.linspace(0, 1, num_points // 10000)  # 각 10,000개마다 고유한 색상 값 할당
+    # labels = np.repeat(colors, 10000)
+    # plt.figure(figsize=(12, 8))
+    # scatter = plt.scatter(X_2d[:, 0], X_2d[:, 1], c=labels, cmap='viridis', marker='.',s=0.1)
+    # plt.colorbar(scatter)
+    # plt.title('t-SNE visualization of state vectors')
+    # plt.xlabel('t-SNE feature 1')
+    # plt.ylabel('t-SNE feature 2')
+    # plt.savefig(f'tsne_dqn_svd{args.seed}.png')
     envs.close()
     writer.close()

@@ -21,7 +21,7 @@ from stable_baselines3.common.atari_wrappers import (
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
-
+from episodic_memory import ReplayBuffer_get
 
 @dataclass
 class Args:
@@ -109,7 +109,7 @@ def layer_init(layer, bias_const=0.0):
 # See the SAC+AE paper https://arxiv.org/abs/1910.01741 for more info
 # TL;DR The actor's gradients mess up the representation when using a joint encoder
 class SoftQNetwork(nn.Module):
-    def __init__(self, envs):
+    def __init__(self, envs,states):
         super().__init__()
         obs_shape = envs.single_observation_space.shape
         self.conv = nn.Sequential(
@@ -135,7 +135,7 @@ class SoftQNetwork(nn.Module):
 
 
 class Actor(nn.Module):
-    def __init__(self, envs):
+    def __init__(self, envs,states):
         super().__init__()
         obs_shape = envs.single_observation_space.shape
         self.conv = nn.Sequential(
@@ -212,16 +212,16 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     envs = gym.vector.SyncVectorEnv([make_env(args.env_id, args.seed, 0, args.capture_video, run_name)])
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    actor = Actor(envs).to(device)
-    qf1 = SoftQNetwork(envs).to(device)
-    qf2 = SoftQNetwork(envs).to(device)
-    qf1_target = SoftQNetwork(envs).to(device)
-    qf2_target = SoftQNetwork(envs).to(device)
-    qf1_target.load_state_dict(qf1.state_dict())
-    qf2_target.load_state_dict(qf2.state_dict())
-    # TRY NOT TO MODIFY: eps=1e-4 increases numerical stability
-    q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
+    # actor = Actor(envs).to(device)
+    # qf1 = SoftQNetwork(envs).to(device)
+    # qf2 = SoftQNetwork(envs).to(device)
+    # qf1_target = SoftQNetwork(envs).to(device)
+    # qf2_target = SoftQNetwork(envs).to(device)
+    # qf1_target.load_state_dict(qf1.state_dict())
+    # qf2_target.load_state_dict(qf2.state_dict())
+    # # TRY NOT TO MODIFY: eps=1e-4 increases numerical stability
+    # q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr, eps=1e-4)
+    # actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr, eps=1e-4)
 
     # Automatic entropy tuning
     if args.autotune:
@@ -232,7 +232,7 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     else:
         alpha = args.alpha
 
-    rb = ReplayBuffer(
+    rb = ReplayBuffer_get(
         args.buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
@@ -245,8 +245,27 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
     obs, _ = envs.reset(seed=args.seed)
     for global_step in range(args.total_timesteps):
         # ALGO LOGIC: put action logic here
+        breakpoint()
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+        elif global_step==args.learning_starts:
+            states=rb.get()
+            numbers=len(states)
+            states.reshape(numbers,-1)
+            _,sigma,v_trans=np.linalg.svd(states, full_matrices=True)
+            squared_sigma = np.square(sigma)
+            total_variance = np.sum(squared_sigma)
+            variance_ratios = squared_sigma / total_variance
+            v_trans=v_trans*(1.0/np.sqrt(variance_ratios))
+            qf1 = SoftQNetwork(envs,states).to(device)
+            qf2 = SoftQNetwork(envs,states).to(device)
+            qf1_target = SoftQNetwork(envs,states).to(device)
+            qf2_target = SoftQNetwork(envs,states).to(device)
+            qf1_target.load_state_dict(qf1.state_dict())
+            qf2_target.load_state_dict(qf2.state_dict())
+            q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
+            actor = Actor(envs,states).to(device) 
+            actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
         else:
             actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
             actions = actions.detach().cpu().numpy()
@@ -349,3 +368,4 @@ poetry run pip install "stable_baselines3==2.0.0a1" "gymnasium[atari,accept-rom-
 
     envs.close()
     writer.close()
+

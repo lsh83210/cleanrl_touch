@@ -13,11 +13,10 @@ import torch.optim as optim
 import tyro
 from stable_baselines3.common.buffers import ReplayBuffer
 from torch.utils.tensorboard import SummaryWriter
+from sklearn.decomposition import PCA
+from episodic_memory import ReplayBuffer_get
 from sklearn.manifold import TSNE
 import matplotlib.pyplot as plt
-from episodic_memory import ReplayBuffer_get
-
-
 
 
 @dataclass
@@ -54,7 +53,7 @@ class Args:
     """target smoothing coefficient (default: 0.005)"""
     batch_size: int = 256
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 5e3
+    learning_starts: int = 1e4
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -88,13 +87,18 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
 # ALGO LOGIC: initialize agent here:
 class SoftQNetwork(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env,v):
         super().__init__()
+        
+        v_tensor = torch.tensor(v, dtype=torch.float32, requires_grad=False)
+        self.custom_layer = nn.Linear(np.array(env.single_observation_space.shape).prod(), np.array(env.single_observation_space.shape).prod())
+        self.custom_layer.weight = nn.Parameter(v_tensor, requires_grad=False)
         self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape), 256)
         self.fc2 = nn.Linear(256, 256)
         self.fc3 = nn.Linear(256, 1)
 
     def forward(self, x, a):
+        x=self.custom_layer(x)
         x = torch.cat([x, a], 1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
@@ -107,8 +111,11 @@ LOG_STD_MIN = -5
 
 
 class Actor(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env,v):
         super().__init__()
+        v_tensor = torch.tensor(v, dtype=torch.float32, requires_grad=False)
+        self.custom_layer = nn.Linear(np.array(env.single_observation_space.shape).prod(), np.array(env.single_observation_space.shape).prod())
+        self.custom_layer.weight = nn.Parameter(v_tensor, requires_grad=False)
         self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
         self.fc2 = nn.Linear(256, 256)
         self.fc_mean = nn.Linear(256, np.prod(env.single_action_space.shape))
@@ -122,6 +129,7 @@ class Actor(nn.Module):
         )
 
     def forward(self, x):
+        x=self.custom_layer(x)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         mean = self.fc_mean(x)
@@ -190,15 +198,8 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
     max_action = float(envs.single_action_space.high[0])
 
-    actor = Actor(envs).to(device)
-    qf1 = SoftQNetwork(envs).to(device)
-    qf2 = SoftQNetwork(envs).to(device)
-    qf1_target = SoftQNetwork(envs).to(device)
-    qf2_target = SoftQNetwork(envs).to(device)
-    qf1_target.load_state_dict(qf1.state_dict())
-    qf2_target.load_state_dict(qf2.state_dict())
-    q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
+       
+    
 
     # Automatic entropy tuning
     if args.autotune:
@@ -210,7 +211,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         alpha = args.alpha
 
     envs.single_observation_space.dtype = np.float32
-    rb = ReplayBuffer(
+    rb = ReplayBuffer_get(
         args.buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
@@ -232,6 +233,24 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+
+        elif global_step==args.learning_starts:
+            states=rb.get()
+            _,sigma,v_trans=np.linalg.svd(states, full_matrices=True)
+            squared_sigma = np.square(sigma)
+            total_variance = np.sum(squared_sigma)
+            variance_ratios = squared_sigma / total_variance
+            v_trans=v_trans*(1.0/np.sqrt(variance_ratios))
+            qf1 = SoftQNetwork(envs,v_trans.T).to(device)
+            qf2 = SoftQNetwork(envs,v_trans.T).to(device)
+            qf1_target = SoftQNetwork(envs,v_trans.T).to(device)
+            qf2_target = SoftQNetwork(envs,v_trans.T).to(device)
+            qf1_target.load_state_dict(qf1.state_dict())
+            qf2_target.load_state_dict(qf2.state_dict())
+            q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
+            actor = Actor(envs,v_trans.T).to(device) 
+            actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
+
         else:
             actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
             actions = actions.detach().cpu().numpy()
@@ -254,7 +273,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                 real_next_obs[idx] = infos["final_observation"][idx]
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
         r_tsne.add(obs, real_next_obs, actions, rewards, terminations, infos)
-
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
 
@@ -324,16 +342,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
     tsne = TSNE(n_components=2, random_state=0)
     X=r_tsne.get()
-    X_2d = tsne.fit_transform(X)
-    num_points = X.shape[0]  # 데이터 포인트의 총 수
-    colors = np.linspace(0, 1, num_points // 50000)  # 각 10,000개마다 고유한 색상 값 할당
-    labels = np.repeat(colors, 50000)
-    plt.figure(figsize=(12, 8))
-    scatter = plt.scatter(X_2d[:, 0], X_2d[:, 1], c=labels, cmap='viridis', marker='.',s=0)
-    plt.colorbar(scatter)
-    plt.title('t-SNE visualization of state vectors')
-    plt.xlabel('t-SNE feature 1')
-    plt.ylabel('t-SNE feature 2')
-    plt.savefig(f'tsne_sac{args.seed}.png')
+    np.save(f'svd_scailing{args.seed}.npy', X)
     envs.close()
     writer.close()

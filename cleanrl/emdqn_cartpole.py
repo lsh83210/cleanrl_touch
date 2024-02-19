@@ -11,12 +11,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import tyro
+from stable_baselines3.common.preprocessing import get_action_dim, get_obs_shape
 from stable_baselines3.common.buffers import ReplayBuffer
+from episodic_memory import  One_Episode_Buffer,EpisodicMemory
 from torch.utils.tensorboard import SummaryWriter
-from sklearn.decomposition import PCA
-from episodic_memory import ReplayBuffer_get
-from sklearn.manifold import TSNE
-import matplotlib.pyplot as plt
+
 
 @dataclass
 class Args:
@@ -54,7 +53,6 @@ class Args:
     """the number of parallel game environments"""
     buffer_size: int = 10000
     """the replay memory buffer size"""
-    svd_buffer_size: int = 1000000
     gamma: float = 0.99
     """the discount factor gamma"""
     tau: float = 1.0
@@ -73,7 +71,33 @@ class Args:
     """timestep to start learning"""
     train_frequency: int = 10
     """the frequency of training"""
+    embedding_dimension: int = 2
+    """the dimension of embedding"""
+    number_neighbor: int = 50
+    """the dimension of embedding"""
+    epi_buffer_size: int = 1000
+    """the dimension of embedding"""
 
+
+# ALGO LOGIC: initialize agent here:
+# class QNetwork(nn.Module):
+#     def __init__(self, env):
+#         super().__init__()
+#         self.network = nn.Sequential(
+#             nn.Linear(np.array(env.single_observation_space.shape).prod(), 120),
+#             nn.ReLU(),
+#             nn.Linear(120, 84),
+#             nn.ReLU(),
+#             nn.Linear(84, env.single_action_space.n),
+#         )
+
+#     def forward(self, x):
+#         return self.network(x)
+
+
+def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
+    slope = (end_e - start_e) / duration
+    return max(slope * t + start_e, end_e)
 
 def make_env(env_id, seed, idx, capture_video, run_name):
     def thunk():
@@ -88,28 +112,6 @@ def make_env(env_id, seed, idx, capture_video, run_name):
         return env
 
     return thunk
-
-
-# ALGO LOGIC: initialize agent here:
-class QNetwork(nn.Module):
-    def __init__(self, env):
-        super().__init__()
-        self.network = nn.Sequential(
-            nn.Linear(np.array(env.single_observation_space.shape).prod(), 120),
-            nn.ReLU(),
-            nn.Linear(120, 84),
-            nn.ReLU(),
-            nn.Linear(84, env.single_action_space.n),
-        )
-
-    def forward(self, x):
-        return self.network(x)
-
-
-def linear_schedule(start_e: float, end_e: float, duration: int, t: int):
-    slope = (end_e - start_e) / duration
-    return max(slope * t + start_e, end_e)
-
 
 if __name__ == "__main__":
     import stable_baselines3 as sb3
@@ -156,20 +158,21 @@ poetry run pip install "stable_baselines3==2.0.0a1"
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    q_network = QNetwork(envs).to(device)
-    optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
-    target_network = QNetwork(envs).to(device)
-    target_network.load_state_dict(q_network.state_dict())
+    # q_network = QNetwork(envs).to(device)
+    # optimizer = optim.Adam(q_network.parameters(), lr=args.learning_rate)
+    # target_network = QNetwork(envs).to(device)
+    # target_network.load_state_dict(q_network.state_dict())
 
-    rb = ReplayBuffer(
+    rb = One_Episode_Buffer(
         args.buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
         device,
         handle_timeout_termination=False,
     )
-    re = ReplayBuffer_get(
-        args.svd_buffer_size,
+
+    em=EpisodicMemory(
+        args.epi_buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
         device,
@@ -179,14 +182,20 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
     # TRY NOT TO MODIFY: start the game
     obs, _ = envs.reset(seed=args.seed)
+    random_projection = torch.rand((get_action_dim(envs.single_action_space) + get_obs_shape(envs.single_observation_space)[0], args.embedding_dimension), device=device)
     for global_step in range(args.total_timesteps):
         # ALGO LOGIC: put action logic here
         epsilon = linear_schedule(args.start_e, args.end_e, args.exploration_fraction * args.total_timesteps, global_step)
         if random.random() < epsilon:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
         else:
-            q_values = q_network(torch.Tensor(obs).to(device))
-            actions = torch.argmax(q_values, dim=1).cpu().numpy()
+            action_Q = np.zeros(envs.single_action_space.n)
+            for i in range(envs.single_action_space.n):
+                concat=np.concatenate((obs, np.array([[i]])), axis=1)
+                embedding=np.dot(concat,random_projection.cpu().numpy())
+                q_value = em.Q_estimate(embedding,args.number_neighbor)
+                action_Q[i]=q_value 
+            actions = np.array([action_Q.argmax()])
 
         # TRY NOT TO MODIFY: execute the game and log data.
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
@@ -205,38 +214,49 @@ poetry run pip install "stable_baselines3==2.0.0a1"
             if trunc:
                 real_next_obs[idx] = infos["final_observation"][idx]
         rb.add(obs, real_next_obs, actions, rewards, terminations, infos)
-        re.add(obs, real_next_obs, actions, rewards, terminations, infos)
 
         # TRY NOT TO MODIFY: CRUCIAL step easy to overlook
         obs = next_obs
-
         # ALGO LOGIC: training.
-        if global_step > args.learning_starts:
-            if global_step % args.train_frequency == 0:
-                data = rb.sample(args.batch_size)
-                with torch.no_grad():
-                    target_max, _ = target_network(data.next_observations).max(dim=1)
-                    td_target = data.rewards.flatten() + args.gamma * target_max * (1 - data.dones.flatten())
-                old_val = q_network(data.observations).gather(1, data.actions).squeeze()
-                loss = F.mse_loss(td_target, old_val)
+        if "final_info" in infos:
+            episode_observations,episode_actions,episode_rewards,episode_pos = rb.get()
+            concats=np.concatenate((np.squeeze(episode_observations), episode_actions.reshape(episode_pos,-1)), axis=1)
+            concats=torch.from_numpy(concats).to(device)
+            embedding=torch.matmul(concats.type(torch.float32), random_projection)
+            embedding=embedding.cpu().numpy()
+            rb.reset()
+            state_action_return=np.zeros(episode_pos+1)
+            
+            return_value=0
+            for i in range(episode_pos-1,-1,-1):
 
-                if global_step % 100 == 0:
-                    writer.add_scalar("losses/td_loss", loss, global_step)
-                    writer.add_scalar("losses/q_values", old_val.mean().item(), global_step)
-                    print("SPS:", int(global_step / (time.time() - start_time)))
-                    writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+                return_value+=episode_rewards[i]*(args.gamma**(episode_pos-i))
+                state_action_return[i]=return_value
+                update_Q=max(em.Q_estimate(embedding[i],args.number_neighbor),return_value)
+                em.add(embedding[i],update_Q)
+            # with torch.no_grad():
+            #     target_max, _ = target_network(data.next_observations).max(dim=1)
+            #     td_target = data.rewards.flatten() + args.gamma * target_max * (1 - data.dones.flatten())
+            # old_val = q_network(data.observations).gather(1, data.actions).squeeze()
+            # loss = F.mse_loss(td_target, old_val)
 
-                # optimize the model
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+            if global_step % 100 == 0:
+                # writer.add_scalar("losses/td_loss", loss, global_step)
+                # writer.add_scalar("losses/q_values", old_val.mean().item(), global_step)
+                print("SPS:", int(global_step / (time.time() - start_time)))
+                writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-            # update target network
-            if global_step % args.target_network_frequency == 0:
-                for target_network_param, q_network_param in zip(target_network.parameters(), q_network.parameters()):
-                    target_network_param.data.copy_(
-                        args.tau * q_network_param.data + (1.0 - args.tau) * target_network_param.data
-                    )
+            # # optimize the model
+            # optimizer.zero_grad()
+            # loss.backward()
+            # optimizer.step()
+
+            # # update target network
+            # if global_step % args.target_network_frequency == 0:
+            #     for target_network_param, q_network_param in zip(target_network.parameters(), q_network.parameters()):
+            #         target_network_param.data.copy_(
+            #             args.tau * q_network_param.data + (1.0 - args.tau) * target_network_param.data
+            #         )
 
     if args.save_model:
         model_path = f"runs/{run_name}/{args.exp_name}.cleanrl_model"
@@ -262,23 +282,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
             repo_name = f"{args.env_id}-{args.exp_name}-seed{args.seed}"
             repo_id = f"{args.hf_entity}/{repo_name}" if args.hf_entity else repo_name
-            push_to_hub(args, episodic_returns, repo_id, "DQN", f"runs/{run_name}", f"videos/{run_name}-eval")
-    tsne = TSNE(n_components=2, random_state=0)
-    X=re.get()
-    front_part = X[:10000,:]
-    back_part = X[-10000:,:]
-    breakpoint()
-    X = np.concatenate([front_part, back_part])
-    X_2d = tsne.fit_transform(X)
-    num_points = X.shape[0]  # 데이터 포인트의 총 수
-    colors = np.linspace(0, 1, 2)  # 각 10,000개마다 고유한 색상 값 할당
-    labels = np.repeat(colors, 10000)
-    plt.figure(figsize=(12, 8))
-    scatter = plt.scatter(X_2d[:, 0], X_2d[:, 1], c=labels, cmap='viridis', marker='.',s=0.1)
-    plt.colorbar(scatter)
-    plt.title('t-SNE visualization of state vectors')
-    plt.xlabel('t-SNE feature 1')
-    plt.ylabel('t-SNE feature 2')
-    plt.savefig(f'tsne_dqn{args.seed}.png')
+            push_to_hub(args, episodic_returns, repo_id, "emdqn_cartpole", f"runs/{run_name}", f"videos/{run_name}-eval")
+
     envs.close()
     writer.close()

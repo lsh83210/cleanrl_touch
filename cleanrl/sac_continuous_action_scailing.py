@@ -54,7 +54,7 @@ class Args:
     """target smoothing coefficient (default: 0.005)"""
     batch_size: int = 256
     """the batch size of sample from the reply memory"""
-    learning_starts: int = 5e3
+    learning_starts: int = 1e4
     """timestep to start learning"""
     policy_lr: float = 3e-4
     """the learning rate of the policy network optimizer"""
@@ -88,13 +88,15 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 
 # ALGO LOGIC: initialize agent here:
 class SoftQNetwork(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env,stds):
         super().__init__()
+        self.stds=stds
         self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape), 256)
         self.fc2 = nn.Linear(256, 256)
         self.fc3 = nn.Linear(256, 1)
 
     def forward(self, x, a):
+        x = x /self.stds.to(device)
         x = torch.cat([x, a], 1)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
@@ -107,12 +109,13 @@ LOG_STD_MIN = -5
 
 
 class Actor(nn.Module):
-    def __init__(self, env):
+    def __init__(self, env,stds):
         super().__init__()
         self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
         self.fc2 = nn.Linear(256, 256)
         self.fc_mean = nn.Linear(256, np.prod(env.single_action_space.shape))
         self.fc_logstd = nn.Linear(256, np.prod(env.single_action_space.shape))
+        self.stds=stds
         # action rescaling
         self.register_buffer(
             "action_scale", torch.tensor((env.action_space.high - env.action_space.low) / 2.0, dtype=torch.float32)
@@ -122,6 +125,7 @@ class Actor(nn.Module):
         )
 
     def forward(self, x):
+        x = x /self.stds.to(device)
         x = F.relu(self.fc1(x))
         x = F.relu(self.fc2(x))
         mean = self.fc_mean(x)
@@ -190,15 +194,6 @@ poetry run pip install "stable_baselines3==2.0.0a1"
 
     max_action = float(envs.single_action_space.high[0])
 
-    actor = Actor(envs).to(device)
-    qf1 = SoftQNetwork(envs).to(device)
-    qf2 = SoftQNetwork(envs).to(device)
-    qf1_target = SoftQNetwork(envs).to(device)
-    qf2_target = SoftQNetwork(envs).to(device)
-    qf1_target.load_state_dict(qf1.state_dict())
-    qf2_target.load_state_dict(qf2.state_dict())
-    q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
-    actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
 
     # Automatic entropy tuning
     if args.autotune:
@@ -210,7 +205,7 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         alpha = args.alpha
 
     envs.single_observation_space.dtype = np.float32
-    rb = ReplayBuffer(
+    rb = ReplayBuffer_get(
         args.buffer_size,
         envs.single_observation_space,
         envs.single_action_space,
@@ -232,6 +227,22 @@ poetry run pip install "stable_baselines3==2.0.0a1"
         # ALGO LOGIC: put action logic here
         if global_step < args.learning_starts:
             actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
+        
+        
+        elif global_step==args.learning_starts:
+            states=rb.get()
+            mean = torch.tensor(np.mean(states, axis=0))
+            std = torch.tensor(np.std(states, axis=0))
+            qf1 = SoftQNetwork(envs,std).to(device)
+            qf2 = SoftQNetwork(envs,std).to(device)
+            qf1_target = SoftQNetwork(envs,std).to(device)
+            qf2_target = SoftQNetwork(envs,std).to(device)
+            qf1_target.load_state_dict(qf1.state_dict())
+            qf2_target.load_state_dict(qf2.state_dict())
+            q_optimizer = optim.Adam(list(qf1.parameters()) + list(qf2.parameters()), lr=args.q_lr)
+            actor = Actor(envs,std).to(device) 
+            actor_optimizer = optim.Adam(list(actor.parameters()), lr=args.policy_lr)
+        
         else:
             actions, _, _ = actor.get_action(torch.Tensor(obs).to(device))
             actions = actions.detach().cpu().numpy()
@@ -324,12 +335,13 @@ poetry run pip install "stable_baselines3==2.0.0a1"
                     writer.add_scalar("losses/alpha_loss", alpha_loss.item(), global_step)
     tsne = TSNE(n_components=2, random_state=0)
     X=r_tsne.get()
+    np.save(f'action-scailing{args.seed}.npy', X)
     X_2d = tsne.fit_transform(X)
     num_points = X.shape[0]  # 데이터 포인트의 총 수
     colors = np.linspace(0, 1, num_points // 50000)  # 각 10,000개마다 고유한 색상 값 할당
     labels = np.repeat(colors, 50000)
     plt.figure(figsize=(12, 8))
-    scatter = plt.scatter(X_2d[:, 0], X_2d[:, 1], c=labels, cmap='viridis', marker='.',s=0)
+    scatter = plt.scatter(X_2d[:, 0], X_2d[:, 1], c=labels, cmap='viridis', marker='.',s=0.1)
     plt.colorbar(scatter)
     plt.title('t-SNE visualization of state vectors')
     plt.xlabel('t-SNE feature 1')

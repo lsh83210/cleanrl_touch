@@ -70,6 +70,7 @@ class Args:
     """Entropy regularization coefficient."""
     autotune: bool = True
     """automatic tuning of the entropy coefficient"""
+    number_c:int=2000
 
 
 def make_env(env_id, seed, idx, capture_video, run_name):
@@ -90,13 +91,20 @@ def make_env(env_id, seed, idx, capture_video, run_name):
 class SoftQNetwork(nn.Module):
     def __init__(self, env):
         super().__init__()
+        self.fixed_weights1 = nn.Parameter(torch.randn(args.number_c,np.array(envs.single_observation_space.shape).prod()+np.prod(env.single_action_space.shape), 500), requires_grad=False)
+        self.scale1 = nn.Parameter(torch.rand(args.number_c), requires_grad=True)
+        # self.fixed_weights2 = nn.Parameter(torch.randn(256, 256), requires_grad=False)
+        # self.scale2 = nn.Parameter(torch.rand(args.number_c), requires_grad=True)
         self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod() + np.prod(env.single_action_space.shape), 256)
         self.fc2 = nn.Linear(256, 256)
         self.fc3 = nn.Linear(256, 1)
 
     def forward(self, x, a):
         x = torch.cat([x, a], 1)
-        x = F.relu(self.fc1(x))
+        x = F.linear(x, (self.fixed_weights1 * self.scale1.unsqueeze(-1).unsqueeze(-1)).sum(dim=0).T)
+        x = F.relu(x)
+        # x = F.linear(x, (self.fixed_weights2 * self.scale2.unsqueeze(-1).unsqueeze(-1)).sum(dim=0).T)
+        # print(self.scale2)
         x = F.relu(self.fc2(x))
         x = self.fc3(x)
         return x
@@ -109,7 +117,12 @@ LOG_STD_MIN = -5
 class Actor(nn.Module):
     def __init__(self, env):
         super().__init__()
+        self.fixed_weights1 = nn.Parameter(torch.randn(args.number_c,np.array(envs.single_observation_space.shape).prod(), 256), requires_grad=False)
+        self.scale1 = nn.Parameter(torch.rand(args.number_c), requires_grad=True)
+        # self.fixed_weights2 = nn.Parameter(torch.randn(256, 256), requires_grad=False)
+        # self.scale2 = nn.Parameter(torch.rand(args.number_c), requires_grad=True)
         self.fc1 = nn.Linear(np.array(env.single_observation_space.shape).prod(), 256)
+        
         self.fc2 = nn.Linear(256, 256)
         self.fc_mean = nn.Linear(256, np.prod(env.single_action_space.shape))
         self.fc_logstd = nn.Linear(256, np.prod(env.single_action_space.shape))
@@ -122,7 +135,9 @@ class Actor(nn.Module):
         )
 
     def forward(self, x):
-        x = F.relu(self.fc1(x))
+        x = F.linear(x, (self.fixed_weights1 * self.scale1.unsqueeze(-1).unsqueeze(-1)).sum(dim=0).T)
+        x = F.relu(x)
+        # x = F.linear(x, (self.fixed_weights2 * self.scale2.unsqueeze(-1).unsqueeze(-1)).sum(dim=0).T)
         x = F.relu(self.fc2(x))
         mean = self.fc_mean(x)
         log_std = self.fc_logstd(x)
