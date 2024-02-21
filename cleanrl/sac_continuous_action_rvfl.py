@@ -117,6 +117,7 @@ LOG_STD_MIN = -5
 class Actor(nn.Module):
     def __init__(self, env):
         super().__init__()
+        #EDIT#sac 알고리즘에서도 actor와 critic의 첫번째 layer를 수정
         self.fixed_weights1 = nn.Parameter(torch.randn(args.number_c,np.array(envs.single_observation_space.shape).prod(), 256), requires_grad=False)
         self.scale1 = nn.Parameter(torch.rand(args.number_c), requires_grad=True)
         # self.fixed_weights2 = nn.Parameter(torch.randn(256, 256), requires_grad=False)

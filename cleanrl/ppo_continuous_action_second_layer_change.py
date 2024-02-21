@@ -1,4 +1,6 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_continuous_actionpy
+##EDIT# python cleanrl/sac_continuous_action.py --env-id InvertedDoublePendulum-v4 --seed 1 --total-timesteps 700000과 같은 방법으로 사용, 연속적인 action일때 사용
+#EDIT# svd, scailing 들어간 파일들은 다른 실험한 파일로 쓸모없음
 import os
 import random
 import time
@@ -113,6 +115,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
+        #EDIT# 조금 무식한 방법으로 layer를 수정 각각의 random weight와 c 갯수를 조절하면서 layer를 구성
         self.fixed_weights1 = nn.Parameter(torch.randn(np.array(envs.single_observation_space.shape).prod(), 64), requires_grad=False)
         self.scale1 = nn.Parameter(torch.ones(args.number_c), requires_grad=True)
         self.fixed_weights2 = nn.Parameter(torch.randn(np.array(envs.single_observation_space.shape).prod(), 64), requires_grad=False)
@@ -167,6 +170,7 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
+    #EDIT# 저장된 이름을 설정하는 부분 args.number_c 부분을 추가함 tensorboard에서 확인을 편하게 할 수 있도록 함
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}_{args.number_c}"
     if args.track:
         import wandb

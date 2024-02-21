@@ -1,4 +1,5 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
+#EDIT# cartpole은 이곳에서 사용 가능
 import os
 import random
 import time

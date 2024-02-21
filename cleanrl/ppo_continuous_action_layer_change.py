@@ -75,6 +75,7 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
+    ##EDIT# c의 parameter 갯수를 조절
     number_c:   int = 100
     # to be filled in runtime
     batch_size: int = 0
@@ -113,6 +114,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
+        ##EDIT#ppo 알고리즘의 actor critic 부분의 first layer를 fixed_weights1와 scale parameter를 이용하여 조절
         self.fixed_weights1 = nn.Parameter(torch.randn(args.number_c,np.array(envs.single_observation_space.shape).prod(), 64), requires_grad=False)
         self.scale1 = nn.Parameter(torch.ones(args.number_c), requires_grad=True)
         self.fixed_weights2 = nn.Parameter(torch.randn(args.number_c,np.array(envs.single_observation_space.shape).prod(), 64), requires_grad=False)
@@ -134,6 +136,7 @@ class Agent(nn.Module):
         self.actor_logstd = nn.Parameter(torch.zeros(1, np.prod(envs.single_action_space.shape)))
 
     def get_value(self, x):
+        #EDIT# 수정한 부분을 layer로 만들어서 통과시킴
         x = F.linear(x, (self.fixed_weights1 * self.scale1.unsqueeze(-1).unsqueeze(-1)).sum(dim=0).T)
         return self.critic(x)
 

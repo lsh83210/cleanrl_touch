@@ -75,6 +75,7 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
+    #EDIT# c의 갯수를 조절하였음
     number_c:   int = 100
     # to be filled in runtime
     batch_size: int = 0
@@ -108,11 +109,17 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.orthogonal_(layer.weight, std)
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
-
+##EDIT#svd로 random layer를 orthnormal하게 구성하는 부분
+def make_svd(input,output,n_samples,rank):
+    vectorize_matrix=torch.randn(input*output,n_samples)
+    u, sigma, v = torch.svd(vectorize_matrix)
+    matrix=v[:,:-rank].view(input, output, -1)
+    return matrix
 
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
+        #EDIT#requries_grad=False로 ci 값을 학습 불가능한 값으로 설정(1로 설정) scale이 ci, fixed_weight가 random weight
         self.fixed_weights1 = nn.Parameter(torch.randn(64, 64), requires_grad=False)
         self.scale1 = nn.Parameter(torch.ones(args.number_c), requires_grad=False)
         self.fixed_weights2 = nn.Parameter(torch.randn(64, 64), requires_grad=False)
