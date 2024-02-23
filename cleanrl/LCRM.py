@@ -97,3 +97,4 @@ class Linear(nn.Module):
 
     def extra_repr(self) -> str:
         return f'in_features={self.in_features}, out_features={self.out_features}, bias={self.bias is not None}'
+    

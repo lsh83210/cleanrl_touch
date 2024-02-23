@@ -110,24 +110,31 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-
+def make_random(input,output,n_samples,rank):
+    vectorize_matrix=torch.randn(input*output,rank)
+    # u, sigma, v = torch.svd(vectorize_matrix)
+    matrix=vectorize_matrix.view(input, output, -1)
+    matrix = torch.transpose(matrix, 0, 2)
+    matrix = torch.transpose(matrix, 1, 2)
+    normalized_tensor = matrix / torch.norm(matrix, dim=2, keepdim=True)
+    return normalized_tensor
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
         ##EDIT#ppo 알고리즘의 actor critic 부분의 first layer를 fixed_weights1와 scale parameter를 이용하여 조절
-        self.fixed_weights1 = nn.Parameter(torch.randn(args.number_c,np.array(envs.single_observation_space.shape).prod(), 64), requires_grad=False)
+        self.fixed_weights1 = nn.Parameter(make_random(np.array(envs.single_observation_space.shape).prod(), 64,100,args.number_c), requires_grad=False)
         self.scale1 = nn.Parameter(torch.ones(args.number_c), requires_grad=True)
-        self.fixed_weights2 = nn.Parameter(torch.randn(args.number_c,np.array(envs.single_observation_space.shape).prod(), 64), requires_grad=False)
+        self.fixed_weights2 = nn.Parameter(make_random(np.array(envs.single_observation_space.shape).prod(), 64,100,args.number_c), requires_grad=False)
         self.scale2 = nn.Parameter(torch.ones(args.number_c), requires_grad=True)
         self.critic = nn.Sequential(
-            # layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 1), std=1.0),
         )
         self.actor_mean = nn.Sequential(
-            # layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), 64)),
+            layer_init(nn.Linear(64, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 64)),
             nn.Tanh(),

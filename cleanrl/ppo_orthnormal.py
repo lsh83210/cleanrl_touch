@@ -69,7 +69,7 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
-    number_c:   int = 64
+    number_c:   int = 100
 
     # to be filled in runtime
     batch_size: int = 0
@@ -104,24 +104,39 @@ def make_svd(input,output,n_samples,rank):
     matrix = torch.transpose(matrix, 0, 2)
     matrix = torch.transpose(matrix, 1, 2)
     return matrix
+def zero_one_random(input,output,n_samples,rank):
 
+    matrix = torch.zeros(input*rank, output)
+
+    indices = torch.randint(0, output, (rank*input,))
+
+    matrix[torch.arange(input*rank), indices] = 1
+    matrix=matrix.view(rank,input,output)
+    return matrix
+def make_random(input,output,n_samples,rank):
+    vectorize_matrix=torch.randn(input*output,rank)
+    # u, sigma, v = torch.svd(vectorize_matrix)
+    matrix=vectorize_matrix.view(input, output, -1)
+    matrix = torch.transpose(matrix, 0, 2)
+    matrix = torch.transpose(matrix, 1, 2)
+    normalized_tensor = matrix / torch.norm(matrix, dim=2, keepdim=True)
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
         ##EDIT#  ppo 알고리즘에서 svd를 통해 random weight를 설정하는 과정. scale은 requires_grad=true로 학습 가능하도록 함
-        self.fixed_weights1 = nn.Parameter(make_svd(np.array(envs.single_observation_space.shape).prod(),64,500,args.number_c),requires_grad=False)
-        self.scale1 = nn.Parameter(torch.randn(args.number_c), requires_grad=True)
-        self.fixed_weights2 = nn.Parameter(make_svd(64,64,4000,args.number_c),requires_grad=False)
+        self.fixed_weights1 = nn.Parameter(zero_one_random(np.array(envs.single_observation_space.shape).prod(),64,500,1),requires_grad=False)
+        self.scale1 = nn.Parameter(torch.randn(1), requires_grad=True)
+        self.fixed_weights2 = nn.Parameter(zero_one_random(64,64,4000,args.number_c),requires_grad=False)
         self.scale2 = nn.Parameter(torch.randn(args.number_c), requires_grad=True)
-        self.fixed_weights3 = nn.Parameter(make_svd(64,1,4000,args.number_c),requires_grad=False)
+        self.fixed_weights3 = nn.Parameter(zero_one_random(64,1,4000,args.number_c),requires_grad=False)
         self.scale3 = nn.Parameter(torch.randn(args.number_c), requires_grad=True)
-        self.fixed_weights4 = nn.Parameter(make_svd(np.array(envs.single_observation_space.shape).prod(),64,4000,args.number_c),requires_grad=False)
-        self.scale4 = nn.Parameter(torch.randn(args.number_c), requires_grad=True)
-        self.fixed_weights5 = nn.Parameter(make_svd(64,64,4000,args.number_c),requires_grad=False)
+        self.fixed_weights4 = nn.Parameter(zero_one_random(np.array(envs.single_observation_space.shape).prod(),64,4000,7),requires_grad=False)
+        self.scale4 = nn.Parameter(torch.randn(7), requires_grad=True)
+        self.fixed_weights5 = nn.Parameter(zero_one_random(64,64,4000,args.number_c),requires_grad=False)
         self.scale5 = nn.Parameter(torch.randn(args.number_c), requires_grad=True)
-        self.fixed_weights6 = nn.Parameter(make_svd(64,envs.single_action_space.n,4000,args.number_c),requires_grad=False)
+        self.fixed_weights6 = nn.Parameter(zero_one_random(64,envs.single_action_space.n,4000,args.number_c),requires_grad=False)
         self.scale6 = nn.Parameter(torch.randn(args.number_c), requires_grad=True)
-        self.bias1 = nn.Parameter(torch.zeros(64), requires_grad=True)
+        self.bias1 = nn.Parameter(torch.zeros(64), requires_grad=False)
         self.bias2 = nn.Parameter(torch.zeros(64), requires_grad=True)
         self.bias3 = nn.Parameter(torch.zeros(1), requires_grad=True)
         self.bias4 = nn.Parameter(torch.zeros(64), requires_grad=True)

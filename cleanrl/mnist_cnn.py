@@ -27,7 +27,27 @@ class Args:
     """seed of the experiment"""
 
 
+class CNN(nn.Module):
+    def __init__(self):
+        super(CNN, self).__init__()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=5)
+        self.conv2 = nn.Conv2d(32, 32, kernel_size=5)
+        self.conv3 = nn.Conv2d(32,64, kernel_size=5)
+        self.fc1 = nn.Linear(3*3*64, 256)
+        self.fc2 = nn.Linear(256, 10)
 
+    def forward(self, x):
+        x = F.relu(self.conv1(x))
+        #x = F.dropout(x, p=0.5, training=self.training)
+        x = F.relu(F.max_pool2d(self.conv2(x), 2))
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = F.relu(F.max_pool2d(self.conv3(x),2))
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = x.view(-1,3*3*64 )
+        x = F.relu(self.fc1(x))
+        x = F.dropout(x, training=self.training)
+        x = self.fc2(x)
+        return F.log_softmax(x, dim=1)
 
 
 
@@ -49,13 +69,11 @@ class MLP(nn.Module):
         self.fc1 = nn.Linear(28 * 28, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 10)
-        self.dropout_prob = 0.93
 
     def forward(self, x):
         x = x.view(-1, 28 * 28)
         x = self.fc1(x)
         x = F.relu(x) # sigmoid(x)
-        x = F.dropout(x, training=self.training, p=self.dropout_prob)
         x = self.fc2(x)
         x = F.relu(x) # sigmoid(x)
         x = self.fc3(x)
@@ -65,7 +83,6 @@ class MIX(nn.Module):
     def __init__(self):
         super(MLP, self).__init__()
         self.fc1 = nn.Linear(28 * 28, 512)
-        self.dropout_prob1 = 0.5
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 10)
 
@@ -73,7 +90,6 @@ class MIX(nn.Module):
         x = x.view(-1, 28 * 28)
         x = self.fc1(x)
         x = F.relu(x) # sigmoid(x)
-        
         x = self.fc2(x)
         x = F.relu(x) # sigmoid(x)
         x = self.fc3(x)
@@ -115,31 +131,19 @@ def zero_one_random(input,output,n_samples,rank):
     matrix[torch.arange(input*rank), indices] = 1
     matrix=matrix.view(rank,input,output)
     return matrix
-class MLP2(nn.Module):
+class MLP(nn.Module):
     def __init__(self):
         super(MLP, self).__init__()
-        self.fixed_weights1 = nn.Parameter(zero_one_random(28*28,2048,123,10),requires_grad=False)
-        self.scale1 = nn.Parameter(torch.randn(10), requires_grad=True)
-        self.bias_scale1 = nn.Parameter(torch.zeros(2048), requires_grad=False)
-        self.dropout_prob1 = 0.5
-        self.dropout_prob2 = 0.5
-        self.batch_norm1 = nn.BatchNorm1d(512)
-        self.batch_norm2 = nn.BatchNorm1d(256)
-        self.fc1 = nn.Linear(2048, 512)
+        self.fc1 = nn.Linear(28 * 28, 512)
         self.fc2 = nn.Linear(512, 256)
         self.fc3 = nn.Linear(256, 10)
 
     def forward(self, x):
         x = x.view(-1, 28 * 28)
-        x = F.linear(x, (self.fixed_weights1 * self.scale1.unsqueeze(-1).unsqueeze(-1)).sum(dim=0).T,bias=self.bias_scale1)
         x = self.fc1(x)
-        x = self.batch_norm1(x)
         x = F.relu(x) # sigmoid(x)
-        x = F.dropout(x, training=self.training, p=self.dropout_prob2)
         x = self.fc2(x)
-        x = self.batch_norm2(x)
         x = F.relu(x) # sigmoid(x)
-        x = F.dropout(x, training=self.training, p=self.dropout_prob2)
         x = self.fc3(x)
         x = F.log_softmax(x, dim=1)
         return x
@@ -262,7 +266,7 @@ def weight_init(m):
     if isinstance(m, nn.Linear):
         init.kaiming_uniform_(m.weight.data)
 
-model = MLP().to(DEVICE) 
+model = CNN().to(DEVICE) 
 model.apply(weight_init)
 # optimizer = torch.optim.SGD(model.parameters(), lr=0.01, momentum=0.5)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
